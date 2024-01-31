@@ -1,0 +1,1162 @@
+---
+title: Core Findings
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+- Goal of this page is to summarize cytosine modification data.
+- I forwent EVC usage. It makes no difference for this noisy dataset.
+ 
+ 
+# Import data
+
+```{r}
+require(data.table)
+require(matrixStats)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(annmatrix)
+# source("code/environmentSetup.R")
+source("code/fns.R")
+# devtools::load_all("rsrc")
+sincos2acro <- function(sin,cos, per=24) (atan2(sin,cos)/2/pi*per+per)%%per
+
+sincos2amp <- function(sin,cos) 2*sqrt(sin^2+cos^2)
+
+### Files from Matt
+pctm <- readRDS("output/ReduceOutliers/mydat_multirep.RDS")
+# aovres <- readRDS("output/ReliableCytosines.RDS")
+pctm <- pctm[,pctm$age != 20]
+
+pctm@pos <- pctm@position
+pctm@modid <- paste(pctm@chr, pctm@pos, pctm@strand, sep=":")
+# pctm@aov_pval <- aovres$pvalue
+
+pctm$sin <- sin(pctm$ct/24*2*pi)
+pctm$cos <- cos(pctm$ct/24*2*pi)
+pctm$age <- as.numeric(as.character(pctm$age))
+
+### Fix ZT and time of day; continuous time (ct) does not change
+### ZT NOT USED for any calculation. It's just for plotting, but I thought I'd fix it early.
+pctm$timeofday <- pctm$zt
+pctm$zt <- ct2zt_e3e4(pctm$ct)
+
+###
+pctm$batch <- case_when(pctm$age == 16 ~ "B1", pctm$age == 31 ~ "B2",
+          pctm$age == 62 ~ "B1")
+
+```
+
+
+## FACS data {.tabset}
+
+### Temporal plots {.tabset}
+#### By CT
+```{r fig.height=2.5, fig.width=7}
+facs <- fread("input/flow_analysis.csv")
+facs$zt <- ct2zt(facs$ct)
+
+g1 <- facs %>%
+  subset(Var1 == "G1" ) %>%
+  ggplot(aes(ct, perCount, color=Var1))+
+  geom_point(alpha=0.5)+
+  # geom_smooth(,method="loess", span=0.5,se=F)+
+  geom_smooth(method="lm", se=T, alpha=0.3) + 
+  scale_x_continuous(breaks=seq(0,24,3)) +
+  scale_color_manual(values=c("#dd1c77")) + ylab("cell proportion (%)") +xlab("continuous time (CT)")
+
+g2 <- facs %>%
+  subset(Var1 == "G2/M" | Var1 == "S") %>%
+  ggplot(aes(ct, perCount, color=Var1))+
+  geom_point(alpha=0.5)+
+  # geom_smooth(,method="loess", span=0.5,se=F)+
+  geom_smooth(method="lm", se=T, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) + 
+  scale_x_continuous(breaks=seq(0,24,3)) +
+  scale_color_manual(values=c("#999999", "#980043")) + ylab("cell proportion (%)")+xlab("continuous time (CT)")
+  
+gridExtra::grid.arrange(g2, g1, ncol=2)
+
+```
+
+#### By ZT
+```{r fig.height=3, fig.width=4}
+
+facs %>%
+  subset(Var1 == "G2/M" | Var1 == "S") %>%
+  ggplot(aes(zt, perCount, color=Var1))+
+  geom_point(alpha=0.5)+
+  # geom_smooth(,method="loess", span=0.5,se=F)+
+  geom_smooth(method="lm", se=T, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) + 
+  scale_x_continuous(breaks=seq(0,24,3)) +
+  scale_color_manual(values=c("#999999", "#980043")) + ylab("cell proportion (%)")+xlab("zeitgeber time (ZT)")
+  
+```
+
+### Harmonic regressionZT
+#### G2/M 
+```{r fig.height=3, fig.width=6}
+
+test <- facs %>%
+  select(Var1, ct, zt, rep, perCount) %>%
+  mutate(Var1 = gsub("/","_",Var1)) %>%
+  spread(., key = "Var1", value=perCount)
+
+res <- lm(G2_M ~ sin(ct/24*2*pi) + cos(ct/24*2*pi) + ct, data=test)
+res2 <- lm(G2_M ~ ct, data=test)
+
+anova(res, res2)
+
+# sincos2acro(sin=res$coefficients[[2]], cos=res$coefficients[[3]])
+
+tmp1 <- lm(G2_M ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="A"))
+tmp2 <- lm(G2_M ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="B"))
+tmp3 <- lm(G2_M ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="C"))
+
+G2_M_acro <- rbind(sincos2acro(tmp1$coefficients[[2]], tmp1$coefficients[[3]]),
+              sincos2acro(tmp2$coefficients[[2]], tmp2$coefficients[[3]]),
+              sincos2acro(tmp3$coefficients[[2]], tmp3$coefficients[[3]]))
+
+24 + mean(ifelse(G2_M_acro >12, G2_M_acro - 24, G2_M_acro))
+sd(ifelse(G2_M_acro >12, G2_M_acro - 24, G2_M_acro))
+
+```
+#### S 
+```{r fig.height=3, fig.width=6}
+
+res <- lm(S ~ sin(ct/24*2*pi) + cos(ct/24*2*pi) + ct, data=test)
+res2 <- lm(S ~ ct, data=test)
+
+anova(res, res2)
+
+tmp1 <- lm(S ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="A"))
+tmp2 <- lm(S ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="B"))
+tmp3 <- lm(S ~  sin(zt/24*2*pi) + cos(zt/24*2*pi), data=test %>% filter(rep=="C"))
+
+S_acro <- rbind(sincos2acro(tmp1$coefficients[[2]], tmp1$coefficients[[3]]),
+              sincos2acro(tmp2$coefficients[[2]], tmp2$coefficients[[3]]),
+              sincos2acro(tmp3$coefficients[[2]], tmp3$coefficients[[3]]))
+mean(S_acro)
+sd(S_acro)
+
+```
+
+#### G1
+```{r fig.height=3, fig.width=6}
+
+res <- lm(G1 ~ sin(ct/24*2*pi) + cos(ct/24*2*pi) + ct, data=test)
+res2 <- lm(G1 ~ ct, data=test)
+
+anova(res, res2)
+
+```
+
+
+### Imputing values {.tabset}
+```{r fig.height=3, fig.width=6}
+facs %>%
+  subset(Var1 == "G2/M" |Var1 =="G1" | Var1 == "S") %>%
+  group_by(Var1, ct) %>%
+  summarise(mean = median(perCount))  %>%
+  ggplot(aes(ct, mean)) +
+  geom_point() +
+  geom_smooth(method="lm", se=T, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) + 
+  facet_wrap(~Var1, scales="free")
+
+mean_facs <- facs %>%
+  group_by(Var1, ct) %>%
+  summarise(mean = mean(perCount)) %>%
+  spread(., key=Var1, value=mean)
+
+```
+
+#### G1
+```{r fig.height=3, fig.width=6}
+res <- lm(G1~ct, data=mean_facs)
+summary(res)
+mean_facs$G1_imputed <- sapply(1:nrow(mean_facs), function(x) res$coefficients[2]*mean_facs$ct[x] + res$coefficients[1])
+
+mean_facs %>%
+  select(ct, G1, G1_imputed) %>%
+  melt(., id.var="ct") %>%
+  ggplot(aes(ct, value, col=variable)) +
+  geom_point() +
+  geom_smooth(method="lm")
+
+Imputed_values <- data.frame(ct=0:32, G1_imputed = sapply(0:32, function(x) res$coefficients[2]*x + res$coefficients[1]))
+```
+
+#### G2/M 
+```{r fig.height=3, fig.width=6}
+res <- lm(`G2/M` ~  sin(ct/24*2*pi) + cos(ct/24*2*pi), data=mean_facs)
+res$coefficients
+mean_facs$G2M_imputed <- sapply(1:nrow(mean_facs), 
+                                function(x) res$coefficients[2]*sin(mean_facs$ct[x]/24*2*pi) +
+                                  res$coefficients[3]*cos(mean_facs$ct[x]/24*2*pi) + 
+                                  res$coefficients[1])
+
+
+mean_facs %>%
+  select(ct, `G2/M`, G2M_imputed) %>%
+  melt(., id.var="ct") %>%
+  ggplot(aes(ct, value, col=variable)) +
+  geom_point() +
+  geom_smooth(method="lm", se=T, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi))
+
+
+Imputed_values$G2M_imputed <- sapply(0:32, 
+                                function(x) res$coefficients[2]*sin(x/24*2*pi) +
+                                  res$coefficients[3]*cos(x/24*2*pi) + 
+                                  res$coefficients[1])
+
+```
+#### S 
+```{r fig.height=3, fig.width=6}
+res <- lm(S ~  sin(ct/24*2*pi) + cos(ct/24*2*pi), data=mean_facs)
+res$coefficients
+mean_facs$S_imputed <- sapply(1:nrow(mean_facs), 
+                                function(x) res$coefficients[2]*sin(mean_facs$ct[x]/24*2*pi) +
+                                  res$coefficients[3]*cos(mean_facs$ct[x]/24*2*pi) + 
+                                  res$coefficients[1])
+
+
+mean_facs %>%
+  select(ct, S, S_imputed) %>%
+  melt(., id.var="ct") %>%
+  ggplot(aes(ct, value, col=variable)) +
+  geom_point() +
+  geom_smooth(method="lm", se=T, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi))
+
+
+Imputed_values$S_imputed <- sapply(0:32, 
+                                function(x) res$coefficients[2]*sin(x/24*2*pi) +
+                                  res$coefficients[3]*cos(x/24*2*pi) + 
+                                  res$coefficients[1])
+```
+
+## Add FACS data to pctm ss
+```{r}
+
+IV <- data.frame(ct= pctm$ct, pipelinerunid = pctm$pipelinerunid) %>%
+  left_join(., Imputed_values, by="ct")
+
+all(IV$pipelinerunid == pctm$pipelinerunid)
+all(IV$pipelinerunid == colnames(pctm))
+
+pctm$G2M_im <- IV$G2M_imputed
+pctm$G1_im <- IV$G1_imputed
+pctm$S_im <- IV$S_imputed
+
+```
+
+```{r}
+# Prep data
+mydat <- avgBioTech(pctm)
+
+# saveRDS(pctm, "output/ReduceOutliers/mydat_multirep_forperm.RDS")
+# mydat <- pctm
+
+# Used for temporal variation only
+mydat_biotech <- pctm
+
+
+```
+
+
+# Detecting Biological Effects
+
+## Ex-vivo Drifting Effects
+
+Linear time effects on a short time scale (~1 day of a mouse's ~700 day? lifespan) in the organoid system could be observed:  
+a) If there exists a large aging effect. Still unlikely if uniform linear over 700 days (1 day gives 1/700 = 0.14%/day)  
+b) If an aging effect is moderate and specific to a short developmental period  
+c) If organoids "accelerate" an aging effect  
+d) If the organoid system has age-unrelated "temporal drifts"  
+
+Similarly to the technical vs inter-organoid/time hypothesis test, here it will be tested if it is likely that all organoids are similar given a more specific alternative hypothesis (linear time). Since there are two alternative hypotheses (oscillation, linear time), to test linear time it will be assumed oscillations exist and vice versa (type II ANOVA).
+
+Null:  `~sin(ct) + cos(ct)`  
+Alt: `~sin(ct) + cos(ct) + ct`  
+
+<!-- ### By media and age -->
+
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CTeff <- annapply(mydat,c("media","age"),function(x){ -->
+<!-- 		fit <- annOLSwFtest(x,~sin+cos+ct,~sin+cos,ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue,fit$fit$betas, rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media","age"), remove=FALSE) -->
+
+<!-- CTeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("CT P-value") -->
+
+<!-- CTeff %>%  -->
+<!-- 	group_by(age,media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ age + media)  -->
+
+<!-- pval.hr <- CTeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value) %>% -->
+<!--   arrange(modid) -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("EXvivo", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- acro.hr <- CTeff %>% -->
+<!--   select(modid, grp, ct) %>% -->
+<!--   spread(.,  key = grp, value=ct) -->
+
+<!-- acro.hr <- acro.hr[match(mydat@modid, acro.hr$modid),] -->
+<!-- colnames(acro.hr) <- paste("EXvivo", colnames(acro.hr), "est", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), acro.hr[,2:ncol(acro.hr)]) -->
+
+<!-- ``` -->
+
+### By media
+```{r fig.height=3, fig.width=6}
+CTeff <- annapply(mydat,c("media"),function(x){
+		fit <- annOLSwFtest(x,~sin+cos+ct+as.factor(age),~sin+cos+as.factor(age),ver=T)
+		data.frame("value"=fit$pvalue,fit$fit$betas, rowanns(x))
+	})
+
+CTeff %>%
+	ggplot(aes(value))+
+	geom_histogram(breaks=0:20/20)+
+	facet_grid(.~grp)+
+	xlab("CT P-value")
+
+CTeff %>% 
+	group_by(grp) %>% 
+	summarize(res=list(summaryPvalTable(value))) %>% 
+  tidyr::unnest(res) %>%
+	dcast(level ~ grp) 
+
+pval.hr <- CTeff %>%
+  select(modid, grp, value) %>%
+  spread(.,  key = grp, value=value) %>%
+  arrange(modid)
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("EXvivo", colnames(pval.hr), "xCOLL_pval", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+acro.hr <- CTeff %>%
+  select(modid, grp, ct) %>%
+  spread(.,  key = grp, value=ct)
+
+acro.hr <- acro.hr[match(mydat@modid, acro.hr$modid),]
+colnames(acro.hr) <- paste("EXvivo", colnames(acro.hr), "xCOLL_est", sep="_")
+mydat@'' <- cbind(rowanns(mydat), acro.hr[,2:ncol(acro.hr)])
+
+```
+
+<!-- ## Temporal effects {.tabset} -->
+
+<!-- Null:  `~as.factor(ct)`   -->
+<!-- Alt: `~1`   -->
+
+<!-- ### media and age -->
+
+<!-- ```{r fig.height=3, fig.width=6} -->
+
+<!-- annapply_fill <- function(x,cols,fun,comb=T){ -->
+<!--   grp <- apply(colanns(x)[,cols,drop=F],1,paste,collapse="_") -->
+<!--   res <- lapply(csplit(x,grp),fun)  -->
+
+<!--   # Tries to generate a data.frame -->
+<!--   if(comb){ -->
+<!--     if("data.frame" %in% class(res[[1]])){ -->
+<!--       return(res %>% data.table::rbindlist(idcol="grp", fill=TRUE)) -->
+<!--     } else if(is.vector(res[[1]])) { -->
+<!--       return(lapply(res,function(x) data.frame("value"=x)) %>% data.table::rbindlist(idcol="grp", fill=TRUE)) -->
+<!--     }else { -->
+<!--       warning("Could not aggregate results, returning a list") -->
+<!--       return(res) -->
+<!--     } -->
+<!--   } else { -->
+<!--     return(res) -->
+<!--   } -->
+<!-- } -->
+
+<!-- TEMeff <- annapply_fill(mydat_biotech, c("media","age"), function(x){ -->
+<!--     res <-  rowVars(x, na.rm = TRUE) -->
+<!-- 		fit <- annOLSwFtest(x, ~as.factor(ct), ~1, ver=T) -->
+<!-- 		data.frame("variance"=res, -->
+<!-- 		           "value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media", "age"), remove=FALSE) -->
+
+<!-- TEMeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("temporal P-value") -->
+
+<!-- TEMeff %>%  -->
+<!-- 	group_by(age,media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ age + media)  -->
+
+<!-- pval.hr <- TEMeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MTEM", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- acro.hr <- TEMeff %>% -->
+<!--   select(modid, grp, variance) %>% -->
+<!--   spread(.,  key = grp, value=variance) -->
+
+<!-- acro.hr <- acro.hr[match(mydat@modid, acro.hr$modid),] -->
+<!-- colnames(acro.hr) <- paste("MVAR", colnames(acro.hr), "var", sep="_") -->
+<!-- all(acro.hr$MVAR_modid_var == mydat@modid) -->
+<!-- mydat@'' <- cbind(rowanns(mydat), acro.hr[,2:ncol(acro.hr)]) -->
+
+<!-- ``` -->
+
+<!-- ### media -->
+
+<!-- ```{r fig.height=3, fig.width=6} -->
+
+<!-- TEMeff <- annapply_fill(mydat, c("media"), function(x){ -->
+<!--     res <-  rowVars(x, na.rm = TRUE) -->
+<!-- 		fit <- annOLSwFtest(x, ~as.factor(ct) + as.factor(age), ~as.factor(age), ver=T) -->
+<!-- 		data.frame("variance"=res, -->
+<!-- 		           "value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media"), remove=FALSE) -->
+
+<!-- TEMeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~.)+ -->
+<!-- 	xlab("temporal P-value") -->
+
+<!-- TEMeff %>%  -->
+<!-- 	group_by(media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~  media)  -->
+
+<!-- pval.hr <- TEMeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MTEM", colnames(pval.hr), "xCOLL_pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- acro.hr <- TEMeff %>% -->
+<!--   select(modid, grp, variance) %>% -->
+<!--   spread(.,  key = grp, value=variance) -->
+
+<!-- acro.hr <- acro.hr[match(mydat@modid, acro.hr$modid),] -->
+<!-- colnames(acro.hr) <- paste("MVAR", colnames(acro.hr), "xCOLL_var", sep="_") -->
+<!-- all(acro.hr$MVAR_modid_var == mydat@modid) -->
+<!-- mydat@'' <- cbind(rowanns(mydat), acro.hr[,2:ncol(acro.hr)]) -->
+
+
+<!-- ``` -->
+
+## Oscillation Effects  {.tabset}
+
+<!-- ### Media and age -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- HReff <- annapply(mydat,c("media","age"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x,~sin+cos+ct,~ ct,ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media","age"), remove=FALSE) %>%  -->
+<!--   mutate(acro=sincos2acro(sin,cos)) %>% -->
+<!--   mutate(amp=sincos2amp(sin,cos)) -->
+
+<!-- HReff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("HR P-value") -->
+
+<!-- HReff %>%  -->
+<!-- 	group_by(age,media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ age + media)  -->
+
+
+<!-- pval.hr <- HReff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- pval.hr <- HReff %>% -->
+<!--   select(modid, grp, acro) %>% -->
+<!--   spread(.,  key = grp, value=acro)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "acro", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- pval.hr <- HReff %>% -->
+<!--   select(modid, grp, amp) %>% -->
+<!--   spread(.,  key = grp, value=amp)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "amp", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+
+### Media 
+```{r fig.height=3, fig.width=6}
+HReff <- annapply(mydat,c("media"),function(x) {
+		fit <- annOLSwFtest(x,~sin+cos+as.factor(age)*ct,~ as.factor(age)*ct,ver=T)
+		data.frame("value"=fit$pvalue,
+		           fit$fit$betas,
+		           rowanns(x))
+	}) %>%
+  separate(grp, c("media"), remove=FALSE) %>% 
+  mutate(acro=sincos2acro(sin,cos)) %>%
+  mutate(amp=sincos2amp(sin,cos))
+
+HReff %>%
+  # filter(aov_pval < 0.1) %>%
+	ggplot(aes(value))+
+	geom_histogram(breaks=0:20/20)+
+	facet_grid(~media)+
+	xlab("HR P-value")
+
+HReff %>% 
+	group_by(media) %>% 
+	summarize(res=list(summaryPvalTable(value))) %>% 
+  tidyr::unnest(res) %>%
+	dcast(level ~  media) 
+
+pval.hr <- HReff %>%
+  select(modid, grp, value) %>%
+  spread(.,  key = grp, value=value) 
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "xCOLL_pval", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+pval.hr <- HReff %>%
+  select(modid, grp, acro) %>%
+  spread(.,  key = grp, value=acro) 
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "xCOLL_acro", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+pval.hr <- HReff %>%
+  select(modid, grp, amp) %>%
+  spread(.,  key = grp, value=amp) 
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("MHR", colnames(pval.hr), "xCOLL_amp", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+```
+
+<!-- ## ENRIV DMR {.tabset} -->
+
+<!-- ### By age -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- DMReff <- annapply(mydat,c("age"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~media + ct, ~ ct, ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("age"), remove=FALSE)  -->
+
+<!-- DMReff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(.~age)+ -->
+<!-- 	xlab("IV DMR P-value") -->
+
+<!-- DMReff %>%  -->
+<!-- 	group_by(age) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res)  %>% -->
+<!-- 	dcast(level ~ age) -->
+
+<!-- pval.hr <- DMReff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("IVDMR", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- pval.hr <- DMReff %>% -->
+<!--   select(modid, grp, mediaENRIV) %>% -->
+<!--   spread(.,  key = grp, value=mediaENRIV)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("IVDMR", colnames(pval.hr), "est", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+<!-- ### All -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+
+<!-- mydat$test_all <- "test_all" -->
+<!-- DMReff2 <- annapply(mydat,c("test_all"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~media + as.factor(ct) + as.factor(age), ~ as.factor(ct) + as.factor(age), ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	})  -->
+
+<!-- DMReff2 %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	xlab("IV DMR P-value") -->
+
+<!-- DMReff2 %>%  -->
+<!-- 	group_by(grp) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) -->
+
+<!-- mydat@IVDMR_xCOLL_pval <- DMReff2$value -->
+<!-- mydat@IVDMR_xCOLL_est <- DMReff2$mediaENRIV -->
+
+<!-- ``` -->
+
+<!-- ## Cell cycle  {.tabset} -->
+<!-- ### By media {.tabset} -->
+<!-- #### G1 -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im + as.factor(age), ~ G2M_im + S_im +as.factor(age), ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media"), remove=FALSE)  -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(.~media)+ -->
+<!-- 	xlab("G1 P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~  media)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_G1", colnames(pval.hr), "xCOLL_pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+<!-- #### G2/M -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im + as.factor(age), ~ G1_im + S_im + as.factor(age), ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media"), remove=FALSE) -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(.~media)+ -->
+<!-- 	xlab("G2/M P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~  media)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_G2M", colnames(pval.hr), "xCOLL_pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- # sincos2acro <- function(sin,cos, per=24) (atan2(sin,cos)/2/pi*per+per)%%per -->
+<!-- # sin2acro <- function(x, per=24) (sin(x/24*2*pi))%%24 -->
+<!-- #  -->
+<!-- # sin2acro <- function(x, per=24) tan(sin(x)/2/pi*per+24)%%24 -->
+<!-- #  -->
+<!-- #  -->
+<!-- # CCeff %>% -->
+<!-- #   filter(value < 0.05) %>% -->
+<!-- #   ggplot(aes(acro)) + -->
+<!-- #   geom_histogram() + -->
+<!-- #   facet_wrap(~media) -->
+
+<!-- ``` -->
+
+<!-- #### S -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im + as.factor(age), ~ G1_im + G2M_im + as.factor(age), ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media"), remove=FALSE)  -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(.~media)+ -->
+<!-- 	xlab("S P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ media)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_S", colnames(pval.hr), "xCOLL_pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+<!-- ### By media and age {.tabset} -->
+<!-- #### G1 -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media","age"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im, ~ G2M_im + S_im, ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media","age"), remove=FALSE)  -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("G1 P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(age, media) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ age + media)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, age, media, value) %>% -->
+<!--   dcast(modid ~ media + age) -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_G1", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+<!-- #### G2/M -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media","age"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im, ~ G1_im + S_im, ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media","age"), remove=FALSE)  -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("G2/M P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(media, age) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~  media + age)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, age, media, value) %>% -->
+<!--   dcast(modid ~ media + age) -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_G2M", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+<!-- #### S -->
+<!-- ```{r fig.height=3, fig.width=6} -->
+<!-- CCeff <- annapply(mydat,c("media","age"),function(x) { -->
+<!-- 		fit <- annOLSwFtest(x, ~G1_im + G2M_im + S_im, ~ G1_im + G2M_im, ver=T) -->
+<!-- 		data.frame("value"=fit$pvalue, -->
+<!-- 		           fit$fit$betas, -->
+<!-- 		           rowanns(x)) -->
+<!-- 	}) %>% -->
+<!--   separate(grp, c("media","age"), remove=FALSE)  -->
+
+<!-- CCeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(media~age)+ -->
+<!-- 	xlab("S P-value") -->
+
+<!-- CCeff %>%  -->
+<!-- 	group_by(media, age) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ media + age)  -->
+
+<!-- pval.hr <- CCeff %>% -->
+<!--   select(modid, age, media, value) %>% -->
+<!--   dcast(modid ~ media + age) -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MCC_S", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+## Pseudo-Aging Effects  {.tabset}
+
+Organoid pools were collected 4.5 days after extraction from native tissue. No native tissue intestinal samples are currently available to estimate aging effects, therefore, in order to approximate aging effects from this data, we can make some assumptions:
+
+1) Epigenetic state of the animal of origin is preserved in the organoids (t=0 organoids == native tissue).    
+2) What happens during the 4.5 day growth period is one of:  
+  a) Ex-vivo drift effects are linear and can be represented by the 4.5-6 day sampling window.  
+  b) Ex-vivo drift effects are negligible
+  c) Ex-vivo drift effects are non-linear but similar for each age/animal  
+
+Many of these assumptions have no basis to rely on, but may be our best approximation given the data. Going forward we can choose to model each animals native tissue using:  
+Assuming 2a - backwards extrapolated values OR    
+Assuming 2b/c - average of organoids should represent aging slopes  
+
+Note: pseudo-aging effects estimated in each media are non-independent since the same 4 animals are in each condition.
+
+Here it will be tested if it is likely that all animals are likely the same given a more specific alternative hypothesis (linear time).
+
+Null:  `~ age`
+Alt: `~ 1`
+
+```{r}
+tmp <- annapply(mydat,c("media","age"),function(x){
+  matrixStats::rowMedians(x)
+},comb=F) %>% do.call(cbind,.)
+
+mydatAA <- annmatrix(tmp,
+					rann = rowanns(mydat),
+					cann = colanns(mydat)[match(colnames(tmp),apply(colanns(mydat)[,c("media","age"),drop=F],1,paste,collapse="_")),])
+
+```
+
+Given the sampling is uneven, certain time points will have more "leverage" than others.
+
+```{r fig.height=2,fig.width=4}
+ages <- as.numeric(unique(mydatAA$age))
+tmpmod <- lm(rnorm(length(ages)) ~ ages)
+levs <- hatvalues(tmpmod)
+names(levs) <- ages
+qplot(ages,levs)+ylim(c(0,NA))+ylab("Leverage")
+```
+
+<!-- ### Pseudo-aging -->
+
+<!-- ```{r fig.height=3, fig.width=6} -->
+
+<!-- PAeff <- annapply(mydatAA,"media",function(x){ -->
+<!-- 	fit <- annOLSwFtest(x,~age,~ 1,ver=T) -->
+<!-- 	data.frame("value"=fit$pvalue,fit$fit$betas, rowanns(x)) -->
+<!-- }) -->
+
+<!-- PAeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(~grp)+ -->
+<!-- 	xlab("Pseudo-Age P-value") -->
+
+<!-- PAeff %>%  -->
+<!-- 	group_by(grp) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ grp) -->
+
+<!-- pval.hr <- PAeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MPseudo", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- pval.hr <- PAeff %>% -->
+<!--   select(modid, grp, age  ) %>% -->
+<!--   spread(.,  key = grp, value=age  )  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("MPseudo", colnames(pval.hr), "est", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+<!-- ``` -->
+
+### Pseudo-aging2 
+- correcting for CT and batch
+
+```{r fig.height=3, fig.width=6}
+
+PAeff <- annapply(mydat,"media",function(x){
+	fit <- annOLSwFtest(x,~ age + as.factor(ct) + batch,~ as.factor(ct) + batch,ver=T)
+	data.frame("value"=fit$pvalue,fit$fit$betas, rowanns(x))
+})
+
+PAeff %>%
+	ggplot(aes(value))+
+	geom_histogram(breaks=0:20/20)+
+	facet_grid(~grp)+
+	xlab("Pseudo-Age P-value")
+
+PAeff %>% 
+	group_by(grp) %>% 
+	summarize(res=list(summaryPvalTable(value))) %>% 
+  tidyr::unnest(res) %>%
+	dcast(level ~ grp)
+
+pval.hr <- PAeff %>%
+  select(modid, grp, value) %>%
+  spread(.,  key = grp, value=value) 
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("MPseudo2", colnames(pval.hr), "pval", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+pval.hr <- PAeff %>%
+  select(modid, grp, age  ) %>%
+  spread(.,  key = grp, value=age  ) 
+
+pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),]
+colnames(pval.hr) <- paste("MPseudo2", colnames(pval.hr), "est", sep="_")
+mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)])
+
+```
+
+<!-- ## Age DMR  -->
+<!-- - using biotechs and correcting for CT -->
+
+<!-- ```{r fig.height=3, fig.width=6} -->
+
+<!-- PAeff <- annapply(mydat,"media",function(x){ -->
+<!-- 	fit <- annOLSwFtest(x,~ as.factor(age) + as.factor(ct) + batch, ~as.factor(ct) +batch, ver=T) -->
+<!-- 	data.frame("value"=fit$pvalue,fit$fit$betas, rowanns(x)) -->
+<!-- }) -->
+
+<!-- PAeff %>% -->
+<!-- 	ggplot(aes(value))+ -->
+<!-- 	geom_histogram(breaks=0:20/20)+ -->
+<!-- 	facet_grid(~grp)+ -->
+<!-- 	xlab("Age DMR P-value") -->
+
+<!-- PAeff %>%  -->
+<!-- 	group_by(grp) %>%  -->
+<!-- 	summarize(res=list(summaryPvalTable(value))) %>%  -->
+<!--   tidyr::unnest(res) %>% -->
+<!-- 	dcast(level ~ grp) -->
+
+<!-- pval.hr <- PAeff %>% -->
+<!--   select(modid, grp, value) %>% -->
+<!--   spread(.,  key = grp, value=value)  -->
+
+<!-- pval.hr <- pval.hr[match(mydat@modid, pval.hr$modid),] -->
+<!-- colnames(pval.hr) <- paste("DMR", colnames(pval.hr), "pval", sep="_") -->
+<!-- mydat@'' <- cbind(rowanns(mydat), pval.hr[,2:ncol(pval.hr)]) -->
+
+
+<!-- ``` -->
+
+
+
+
+# Export data for later
+
+```{r}
+# require(readr)
+
+### Convert ct acrophases to zt to be more applicable to biology
+tmp <- rowanns(mydat) %>% mutate_if(., grepl("acro", colnames(.)), function(x) ct2zt_e3e4(x))
+
+if(all(tmp$modid == mydat@modid)){
+  mydat@'' <- tmp
+} else {stop("error matching coordinates")}
+
+### December 18th, 2019 
+# mydat$old_zt <- mydat$zt
+# mydat$zt <- ct2zt_e3e4(mydat$ct)
+
+saveRDS(mydat, "output/methylation_stats.RDS")
+
+```
+
+### Quick plots {.tabset}
+
+#### Osc-modC acrophase
+
+```{r fig.height = 3,fig.width =4}
+mydat <- readRDS("output/methylation_stats.RDS")
+dat <- rowanns(mydat)
+
+dat %>%
+  # mutate(ageDMR = DMR_ENR_pval < 0.05) %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  ggplot(aes(x=MHR_ENR_xCOLL_acro)) +
+    geom_rect(aes(xmin=12,xmax=Inf,ymin=0,ymax=Inf), alpha=0.1, fill="lightgrey", col="white") +
+  geom_histogram(breaks=0:24, col="white", size=0.2) + coord_polar() +
+  scale_x_continuous(breaks=seq(0,24,2)) +
+  xlab("osc-modC acrophase")
+
+```
+
+```{r fig.height = 2,fig.width =3}
+dat %>%
+  # mutate(ageDMR = DMR_ENR_pval < 0.05) %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  ggplot(aes(x=MHR_ENR_xCOLL_acro)) +
+  geom_rect(aes(xmin=12,xmax=Inf,ymin=0,ymax=Inf), alpha=0.1, fill="lightgrey", col="white") +
+  geom_histogram(breaks=0:24, col="white", size=0.2) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  xlab("osc-modC acrophase")
+
+```
+
+#### Osc-modC acrophase with IV
+
+```{r fig.height = 2,fig.width =3}
+dat %>%
+  # mutate(ageDMR = DMR_ENR_pval < 0.05) %>%
+  filter(MHR_ENRIV_xCOLL_pval < 0.05) %>%
+  ggplot(aes(x=MHR_ENRIV_xCOLL_acro)) +
+  geom_rect(aes(xmin=12,xmax=Inf,ymin=0,ymax=Inf), alpha=0.1, fill="lightgrey", col="white") +
+  geom_histogram(breaks=0:24, col="white", size=0.2) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  xlab("osc-modC acrophase")
+
+```
+
+#### Osc-modC histogram
+```{r fig.height = 2,fig.width =3}
+dat %>%
+  ggplot(aes(x=MHR_ENR_xCOLL_pval)) +
+  geom_histogram(breaks=0:20/20, col="white", size=0.2) +
+  xlab("harmonic regression p-value")
+
+```
+
+#### Osc-modC histogram with IV
+```{r fig.height = 2,fig.width =3}
+
+dat %>%
+  ggplot(aes(x=MHR_ENRIV_xCOLL_pval)) +
+  geom_histogram(breaks=0:20/20, col="white", size=0.2) +
+  xlab("harmonic regression p-value")
+
+
+```
+
+#### Pseudo-aging histogram
+```{r fig.height = 2,fig.width =3}
+dat %>%
+  ggplot(aes(x=MPseudo2_ENR_pval)) +
+  geom_histogram(breaks=0:20/20, col="white", size=0.2) +
+  xlab("donor age linear regression p-value")
+
+```
+
+#### Ex vivo histogram
+```{r fig.height = 2,fig.width =3}
+dat %>%
+  ggplot(aes(x=EXvivo_ENR_xCOLL_pval)) +
+  geom_histogram(breaks=0:20/20, col="white", size=0.2) +
+  xlab("epigenetic drift p-value")
+
+```
+
+#### Ex vivo drift
+```{r fig.height = 2,fig.width =6}
+
+dat %>%
+  select(modid, EXvivo_ENR_16_pval, EXvivo_ENR_31_pval, EXvivo_ENR_62_pval) %>%
+  melt(., id.var="modid") %>%
+  mutate(variable = case_when(grepl("16", variable) ~"postnatal day 15",
+                              grepl("62", variable) ~"postnatal day 60",
+                           grepl("31", variable) ~"postnatal day 30")) %>%
+  ggplot(aes(x=abs(value))) +  
+  geom_histogram(breaks=0:20/20, size=0.2, col="white") +
+  xlab("epigenetic drift p-value") +
+  facet_wrap(~variable)
+
+```
+
+#### IV DMR
+```{r fig.height = 2,fig.width =6}
+
+dat %>%
+  select(modid, IVDMR_16_pval, IVDMR_31_pval, IVDMR_62_pval) %>%
+  melt(., id.var="modid") %>%
+  mutate(variable = case_when(grepl("16", variable) ~"postnatal day 15",
+                              grepl("62", variable) ~"postnatal day 60",
+                           grepl("31", variable) ~"postnatal day 30")) %>%
+  ggplot(aes(x=abs(value))) +  
+  geom_histogram(breaks=0:20/20, size=0.2, col="white") +
+  xlab("IV treatment p-value") +
+  facet_wrap(~variable)
+
+```
+
+#### Cell cycle
+```{r fig.height = 2,fig.width =6}
+
+dat %>%
+  select(modid, MCC_G2M_ENR_xCOLL_pval, MCC_S_ENR_xCOLL_pval) %>%
+  melt(., id.var="modid") %>%
+  mutate(variable = case_when(grepl("G2M", variable) ~"G2/M phase",
+                              grepl("S", variable) ~"Synthesis phase")) %>%
+  ggplot(aes(x=abs(value))) +  
+  geom_histogram(breaks=0:20/20, size=0.2, col="white") +
+  xlab("cell cycle p-value") +
+  facet_wrap(~variable)
+
+```

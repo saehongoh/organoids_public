@@ -1,0 +1,1238 @@
+---
+title: "CEO"
+author: "Edward"
+date: "26/10/2023"
+output: html_document
+---
+
+```{r}
+require(data.table)
+require(matrixStats)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(annmatrix)
+require(patchwork)
+# source("code/environmentSetup.R")
+source("code/fns.R")
+
+# devtools::load_all("rsrc")
+sincos2acro <- function(sin,cos, per=24) (atan2(sin,cos)/2/pi*per+per)%%per
+sincos2amp <- function(sin,cos) 2*sqrt(sin^2+cos^2)
+```
+
+### Import data
+
+```{r fig.height = 3,fig.width =4}
+mydat <- readRDS("output/methylation_stats.RDS")
+dat <- rowanns(mydat) 
+# source("code/fns.R")
+
+```
+
+### Figure 1
+
+#### (a) (b)
+```{r fig.height =2,fig.width =6}
+qPCR <- fread("input/170217_qPCR_logddCT.csv")
+qPCR <- qPCR %>% rename(Gene = Target)
+qPCR[qPCR$Gene == "PER1",]$Gene <- "Per1"
+qPCR[qPCR$Gene == "ARNTL",]$Gene <- "Arntl"
+qPCR[qPCR$Gene == "PER2",]$Gene <- "Per2"
+
+## Fixing CT: continuous time 
+qPCR <- qPCR %>% rename(ct = ZT, time_of_day=CT) %>%
+  mutate(zt = ct2zt(ct))
+
+facs <- fread("input/flow_analysis.csv")
+facs$zt <- ct2zt(facs$ct)
+
+panel_a <- qPCR %>% 
+  subset(Gene != "VIL1" & Gene != "LCT") %>% 
+  ggplot(aes(zt, logddCt, color=Gene))+
+  theme_bw() +
+  annotate("rect",xmin = 12,  xmax = Inf,  ymin = -Inf,  ymax = Inf, fill = "grey88", col="white", alpha = 0.4) +
+  geom_point(alpha=0.5, size=0.5)+
+  geom_smooth(method="lm", se=F, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) +
+  scale_x_continuous(breaks=seq(0,21,3)) + ylab("") + 
+  xlab("ZT") + 
+  ylab("relative expression") +
+  scale_color_manual(values=c(colkey[5],colkey[10], colkey[15]))   +
+  facet_wrap(~Gene, scales="free", nrow=1) +
+  ggtitle("a") + 
+  theme(
+    strip.background =element_blank(),
+                # legend.title = element_blank(),
+    legend.position = "none",
+    #         legend.position = c(0.5,1.2),
+    # legend.key.size = unit(0.05,'cm'),
+    # legend.direction = "horizontal",
+        text = element_text(size = 7))
+
+panel_b <-
+  facs %>%
+  subset(Var1 == "G2/M" | Var1 == "S") %>%
+  ggplot(aes(zt, perCount, color=Var1))+
+  annotate("rect",xmin = 12,  xmax = Inf,  ymin = -Inf,  ymax = Inf, fill = "grey88", col="white", alpha = 0.4) +
+  geom_point(alpha=0.5, size=0.5)+
+  geom_smooth(method="lm", se=F, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) + 
+  scale_x_continuous(breaks=seq(0,21,3)) +
+  scale_color_manual(values=rev(c("grey25", "darkred")), name="Cell cycle\nstage") + ylab("cell proportion (%)")+
+  # scale_color_grey() +
+  xlab("ZT") +
+  guides(fill=guide_legend(title="Cell cycle stage"))  + 
+  ggtitle("b") + 
+  facet_wrap(~Var1, scales="free", nrow=1) +
+  theme(strip.background =element_blank(),
+        legend.title = element_blank(),
+                legend.position = "none",
+    #         legend.position = c(0.5,1.2),
+    # legend.key.size = unit(0.05,'cm'),
+    # legend.direction = "horizontal", 
+        text = element_text(size = 7))
+  
+```
+
+<!-- #### (c) -->
+<!-- ```{r fig.height =2,fig.width =3} -->
+
+<!-- panel_c <- facs %>% -->
+<!--   mutate(Var1 = ifelse(grepl("G1", Var1), "G0/G1", Var1)) %>% -->
+<!--   ggplot(aes(Var1, perCount)) + -->
+<!--   geom_boxplot() + ylab("cell proportion (%)")+ -->
+<!--   xlab("cell cycle phase")  + -->
+<!--   ggtitle("c") + -->
+<!--   theme(strip.background =element_blank(), -->
+<!--         text = element_text(size = 7)) -->
+
+<!-- facs %>% -->
+<!--   filter(Var1 == "S") %>% -->
+<!--   ggplot(aes(x=zt, y=perCount)) + -->
+<!--   geom_hline(yintercept = 15.46999, col="Red") + -->
+<!--   geom_hline(yintercept = 16.25178) + -->
+<!--   geom_point() -->
+
+<!-- median(facs[facs$Var1 == "S",]$perCount) -->
+
+<!-- quantile(facs[facs$Var1 == "S",]$perCount, 0:5/5) -->
+<!-- sum(facs[facs$Var1 == "S",]$perCount)/2 -->
+<!-- facs[facs$Var1 == "S",] %>% -->
+<!--   filter(between(zt, 10,24)) %>% -->
+<!--   summarise(sum(perCount)) -->
+<!-- unique(facs$zt) -->
+
+<!-- facs %>% -->
+<!--   filter(Var1 == "S") %>% -->
+<!--   mutate(major = between(zt, 13, 19)) %>% -->
+<!--   group_by(major) %>% -->
+<!--   summarise(med = median(perCount), sum=sum2(perCount), sum(freq)) -->
+
+<!-- ``` -->
+
+#### (c) osc heatmap
+Heatmap of osc-modC densities (range=0.9-1.10; mean-centered). 
+
+```{r fig.height =5,fig.width = 2.5}
+
+HReff <- annapply(mydat, c("media"), function(x) {
+		fit <- annOLSwFtest(x, ~sin+cos + as.factor(age)*ct, ~as.factor(age)*ct,ver=T)
+		data.frame("value"=fit$pvalue,
+		           fit$fit$betas,
+		           rowanns(x))
+	}) %>%
+  separate(grp, c("media"), remove=FALSE) %>% 
+  mutate(acro=sincos2acro(sin,cos)) %>%
+  mutate(amp=sincos2amp(sin,cos))
+
+osc_order <- HReff %>%
+  filter(grp == "ENR") %>%
+  filter(value < 0.05) %>%
+  mutate(slp = -log10(value)*amp) %>%
+  # arrange(ct2zt_e3e4(acro)) %>%
+  arrange(acro)
+
+plotdf <- data.frame(modid = mydat@modid, mydat)
+
+plotdfx <- plotdf %>%
+  filter(modid %in% osc_order$modid) %>%
+  melt(., id.var="modid") %>%
+  rename(sampleid = variable) %>%
+  left_join(., data.frame(zt = mydat$zt, ct=mydat$ct, age= mydat$age, media=mydat$media, sampleid= paste0("X", mydat$sampleid)), by = "sampleid") %>%
+  filter(media !="ENRIV") %>%
+  group_by(modid, age) %>%
+  mutate(mean_value = mean(value)) %>%
+  # filter(!is.na(mean_value)) %>%
+  mutate(centered = value - mean_value) %>%
+  ungroup() %>%
+  group_by(modid, ct) %>%
+  mutate(key = 1:n()) %>%
+  mutate(key = paste(zt, key, sep=".")) %>%
+  ungroup() %>%
+  mutate(modid = factor(modid, c(osc_order$modid))) %>%
+  mutate(key = factor(key, c(sort(as.numeric(as.character(unique(key))))))) %>%
+  mutate(grp = "bisulfite-seq\n(osc-modCs)")
+
+scale_bin <- quantile(plotdfx$centered*100, c(0.05, 0.95), na.rm=TRUE)
+
+panel_c <- plotdfx %>%
+  ggplot(aes(x=(key), y=modid, fill=(centered)*100)) +
+  geom_tile() + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                      axis.text.y = element_blank()) +
+  viridis::scale_fill_viridis(option="mako", limits=c(scale_bin[1], scale_bin[2]), oob=scales::squish) +
+  # scale_fill_continuous(colours = terrain.colors()) +
+  scale_x_discrete(labels=c( 0, "", "",4, "","", 8, "","", 12, "","", 16, "", "",20, "")) +
+  xlab("zeitgeber time") + ylab("") + scale_y_discrete(breaks=NULL) +
+  labs(fill='normalized\n%modC') +
+  facet_grid(~grp)  + 
+  ggtitle("c") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+```
+
+#### (d) osc p-value histogram
+```{r fig.height = 2,fig.width =3}
+
+HReff <- annapply(mydat, c("media"), function(x) {
+		fit <- annOLSwFtest(x, ~sin+cos + as.factor(age)*ct, ~as.factor(age)*ct,ver=T)
+		data.frame("value"=fit$pvalue,
+		           fit$fit$betas,
+		           rowanns(x))
+	}) %>%
+  separate(grp, c("media"), remove=FALSE) %>% 
+  mutate(acro=sincos2acro(sin,cos)) %>%
+  mutate(amp=sincos2amp(sin,cos))
+
+panel_d <-
+  HReff %>%
+  # filter(evc_pval < 0.05) %>%
+  filter(grp == "ENR") %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(breaks=0:20/20, col="white", size=0.2) +
+  xlab("oscillation p-value")  + 
+  ggtitle("d") + 
+  # coord_cartesian(ylim = c(1000,2000)) +
+  # ylim(0,2000) +
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+```
+
+<!-- ### (runs test) -->
+<!-- ```{r} -->
+<!-- mydat[,mydat$media == "ENR"] -->
+<!-- fit <- annOLSwFtest(mydat[,mydat$media == "ENR"], ~sin+cos + as.factor(age)*ct, ~as.factor(age)*ct,ver=T) -->
+
+<!-- # randtests::runs.test(fit$fit) -->
+<!-- # fit$fit$fit$residuals -->
+
+<!-- mat_runs <- function(mat){ -->
+
+<!--   # same for all rows -->
+<!--   nm=ncol(mat) -->
+<!--   # stopifnot(nm >= 30)  -->
+<!--   warning("To Matt: Add back the stopping criteria at some point!") -->
+<!--   denom <- (nm^2 * (nm - 1)) -->
+
+<!--   # Convert to runs -->
+<!--   mat <- ((mat > 0)*1) -->
+<!--   runs = rowSums(mat[,-1] != mat[,-ncol(mat)])+1 -->
+<!--   ms=rowSums(mat==0) -->
+<!--   ns=rowSums(mat==1) -->
+
+<!--   E <- 1 + 2*ns*ms / nm -->
+<!--   s2 <- (2*ns*ms * (2*ns*ms - ns - ms)) / denom -->
+<!--   statistic <- (runs - E) / sqrt(s2) -->
+<!--   p.value = pnorm(statistic) -->
+<!--   return(p.value) -->
+<!-- } -->
+
+<!-- unique(mydat$age) -->
+<!-- tmp_dat <- mydat[,mydat$media == "ENR" & mydat$age == "62"] -->
+<!-- # fit <- annOLSwFtest(mydat[,mydat$media == "ENR"], ~sin+cos + as.factor(age)*ct, ~as.factor(age)*ct,ver=T) -->
+<!-- fit <- annOLSwFtest(tmp_dat, ~sin+cos + ct, ~ ct, ver=T) -->
+<!-- tmp_df <- fit$fit$residuals -->
+
+<!-- neworder <- tmp_df$'' %>% -->
+<!--   arrange(ct) -->
+
+<!-- tmp_df2 <- tmp_df[,match(neworder$sampleid, tmp_df$sampleid)] -->
+<!-- colnames(tmp_df2) == neworder$sampleid -->
+<!-- tmp_df2$sampleid == neworder$sampleid -->
+<!-- tmp_df2$ct -->
+
+<!-- runs_p <- mat_runs(tmp_df2) -->
+<!-- hist(runs_p) -->
+
+<!-- data.frame(value=fit$pvalue) %>% -->
+<!--   # filter(media == "ENR") %>% -->
+<!--   mutate(runsP = runs_p) %>% -->
+<!--   ggplot(aes(x=value, fill=runsP<0.05)) + -->
+<!--   geom_histogram(breaks=0:20/20, col="white", size=0.2) + -->
+<!--   xlab("harmonic regression p-value")  +  -->
+<!--   ggtitle("e") +  -->
+<!--   theme(strip.background =element_blank(), -->
+<!--         text = element_text(size = 7)) -->
+<!-- ``` -->
+
+
+#### (e) osc permutations
+```{r}
+
+plotPerms <- function(realdf,permdf){
+
+    realres <- realdf %>% group_by(grp) %>% summarise(pct=mean(pvalue<0.05,na.rm=T))
+    realres$iter="real"
+    permres <- permdf %>% group_by(grp,iter) %>% summarise(pct=mean(pvalue<0.05,na.rm=T)) %>% ungroup()
+    pvals=rbind(permres,realres) %>% group_by(grp) %>% summarise(p=sum(pct[iter=="real"]<=pct[iter!="real"])/sum(iter!="real"))
+    master<- merge(realres,pvals)
+    
+    permres %>% 
+        ggplot(aes(grp,pct))+
+        geom_point(position=position_jitter(width=0.2),color="grey")+
+        coord_flip()+
+        geom_hline(yintercept = 0.05,linetype=2)+
+        geom_point(data=master,color="red",size=3)+
+        geom_text(data=master,aes(grp,pct,label=p))+
+        ylab("%Significant (p<0.05)")+xlab("")
+}
+
+annOLSwFtest_permSinCos <- function(x,f1,f2,N){
+    lapply(1:N,function(i){
+        set.seed(i)
+        tmpdat <- x
+        colanns(tmpdat) <- colanns(tmpdat) %>% 
+            mutate(shuf=sample(1:length(sin))) %>% 
+            mutate(sin=sin[shuf],cos=cos[shuf])
+        data.frame(pvalue=annOLSwFtest(tmpdat,f1,f2))
+    }) %>% data.table::rbindlist(idcol="iter")
+}
+
+permANOVAwithin_SinCos <- function(dat,f1,f2,N,shufvar="sampleid"){
+    permdf <- annapply(dat,c("age","media"),function(x){
+        annOLSwFtest_permSinCos(x,f1,f2,N)
+    })
+    
+    realdf <- annapply(dat,c("age","media"),function(x){
+        res <- annOLSwFtest(x,f1,f2)
+        data.frame(pvalue=res,iter="real")
+    })
+  
+    p <- plotPerms(realdf,permdf)
+    
+    print(p)
+    
+    return(list("perms"=permdf,"real"=realdf,p))
+}
+
+permANOVAwithin_SinCos_media <- function(dat,f1,f2,N,shufvar="sampleid"){
+    permdf <- annapply(dat,c("media"),function(x){
+        annOLSwFtest_permSinCos(x,f1,f2,N)
+    })
+    
+    realdf <- annapply(dat,c("media"),function(x){
+        res <- annOLSwFtest(x,f1,f2)
+        data.frame(pvalue=res,iter="real")
+    })
+  
+    p <- plotPerms(realdf,permdf)
+    
+    print(p)
+    
+    return(list("perms"=permdf,"real"=realdf,p))
+}
+
+# aovres <- readRDS("output/ReliableCytosines.RDS")
+# mydatA <- mydat[aovres$pvalue<0.05,]
+# mydat@aov_pval <- aovres$pvalue
+
+Nperm=1000
+# Run permutations
+cachefile <- paste0("output/cache/HRpermplotDat_media_all",Nperm,".RDS")
+if(file.exists(cachefile)){
+    HRpermplotDat <- readRDS(cachefile)
+    HRpermplotDat[[3]]
+}else{
+    HReff_perms <- permANOVAwithin_SinCos_media(mydat,~sin+cos+as.factor(age)*ct,~as.factor(age)*ct,Nperm)
+    
+    # Combine permutations by media
+    realres <- HReff_perms$real %>% 
+        mutate(age=substr(grp,1,7)) %>% 
+        mutate(media=substr(grp,9,20)) %>%
+        mutate(iter="real") %>% 
+        group_by(media,iter) %>% 
+        summarise(pct=mean(pvalue<0.05,na.rm=T)) %>% 
+        ungroup()
+    
+    permres <- HReff_perms$perms %>% 
+        mutate(age=substr(grp,1,7)) %>% 
+        mutate(media=substr(grp,9,20)) %>%
+        mutate(iter=as.character(iter)) %>% 
+        group_by(media,iter) %>% 
+        summarise(pct=mean(pvalue<0.05,na.rm=T)) %>% 
+        ungroup()
+    
+    pvals=rbind(permres,realres) %>% group_by(media) %>% summarise(p=sum(pct[iter=="real"]<=pct[iter!="real"])/sum(iter!="real"))
+
+    master <- merge(pvals,realres)
+    
+    HRpermplotDat <- list("pctsig_perms"=permres,
+                                                "pvals"=master,
+                                                "plot"=HReff_perms[[3]],
+                                                HReff_perms$real)
+    
+    saveRDS(HRpermplotDat,file=cachefile,compress=F)
+}
+
+HRpermplotDat[[1]] %>% 
+    ggplot(aes(media,pct))+
+    geom_point(position=position_jitter(width=0.2),color="grey")+
+    # facet_wrap(~media,scales="free")+
+    coord_flip()+
+    geom_point(data=HRpermplotDat[[2]],color="red",size=3)+
+    geom_text(data=HRpermplotDat[[2]],aes(media,pct,label=p))
+
+panel_e <- HRpermplotDat[[1]] %>% 
+    ggplot(aes(pct))+
+  geom_histogram( col="white", size=0.2) +
+    geom_vline(xintercept = HRpermplotDat[[2]]$pct, col="darkred") +
+    ylab("permutations") + xlab("mean r-squared") +
+   ggtitle("e") + 
+    # facet_wrap(~media,scales="free")+
+    # coord_flip()+
+    # geom_point(data=HRpermplotDat[[2]],color="red",size=3)+
+    geom_text(data=HRpermplotDat[[2]],size=2, aes(x=HRpermplotDat[[2]]$pct+0.005, y=100,pct,label=paste0("p=",p)))  + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+```
+
+#### (f) osc acrophase
+```{r fig.height = 2,fig.width =3}
+
+### Convert ct acrophases to zt to be more applicable to biology
+
+panel_f <- HReff %>%
+  filter(grp == "ENR") %>%
+  filter(value < 0.05) %>%
+  # ggplot(aes(x=ct2zt_e3e4(acro))) +
+  ggplot(aes(x=acro)) +
+  geom_rect(aes(xmin=12,xmax=Inf,ymin=0,ymax=Inf), alpha=0.1, fill="lightgrey", col="white") +
+  geom_histogram(breaks=0:24, col="white", size=0.2) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  # coord_cartesian(ylim = c(1000,2000)) +
+  xlab("acrophase")  + 
+  ggtitle("f") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+```
+
+#### (g) pseudo Chisqr test 
+```{r fig.height = 2,fig.width =9}
+chi_tmp <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & MPseudo2_ENR_pval < 0.05) %>%
+  mutate(acro_bins = cut(MHR_ENR_xCOLL_acro, seq(0,24,3))) %>%
+  mutate(direction = ifelse(MPseudo2_ENR_est < 0, "loss","gain")) %>%
+  select(acro_bins, direction)
+
+chi_res <- chisq.test(table(chi_tmp$acro_bins, chi_tmp$direction))
+graphed <- chi_grapher(chi_res, two_by_two = FALSE)
+p1 <- graphed[[4]] + ggtitle(paste("interaction p=",signif(chi_res$p.value, 2), "\n\nnumber of osc-modCs", sep=""))
+p3 <- graphed[[3]] + ggtitle(" \n\n% contribution") 
+# gridExtra::grid.arrange(p1, p3, nrow=1)
+
+```
+
+```{r fig.height = 2.25,fig.width =3.5}
+
+compounded <- data.frame(100*chi_res$residuals^2/chi_res$statistic) %>%
+      mutate(Freq = Freq*sign(data.frame(chi_res$residuals)$Freq)) 
+    
+panel_g <- compounded %>%
+  filter(Freq > 0) %>%
+  mutate(Freq = ifelse(Var2 == "loss", -Freq, Freq)) %>%
+  mutate(Var1 = factor(Var1, levels=rev(sort(unique(Var1))))) %>%
+  # mutate(cols = paste(Var2, Var1)) %>%
+  ggplot(aes(x=Var1, y=Freq, fill=Var1)) +
+  geom_bar(stat="identity") + coord_flip() +
+  # scale_fill_viridis_d() +
+  scale_fill_grey() +
+theme(legend.position = "none") +
+  xlab("oscillation\nacrophases") +
+  ylab("% contribution to linear trend") +
+  scale_y_continuous(breaks=seq(-10, 15, 5), labels=abs(seq(-10, 15, 5)))   + 
+  ggtitle("g") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+```
+
+
+
+#### (h) ex vivo Chisqr test 
+```{r fig.height = 2,fig.width =9}
+chi_tmp <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  mutate(acro_bins = cut(MHR_ENR_xCOLL_acro, seq(0,24,3))) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "loss","gain")) %>%
+  select(acro_bins, direction)
+
+chi_res <- chisq.test(table(chi_tmp$acro_bins, chi_tmp$direction))
+graphed <- chi_grapher(chi_res, two_by_two = FALSE)
+p1 <- graphed[[4]] + ggtitle(paste("interaction p=",signif(chi_res$p.value, 2), "\n\nnumber of osc-modCs", sep=""))
+p3 <- graphed[[3]] + ggtitle(" \n\n% contribution") 
+# gridExtra::grid.arrange(p1, p3, nrow=1)
+
+```
+
+```{r fig.height = 2.25,fig.width =3.5}
+
+compounded <- data.frame(100*chi_res$residuals^2/chi_res$statistic) %>%
+      mutate(Freq = Freq*sign(data.frame(chi_res$residuals)$Freq)) 
+    
+panel_h <- compounded %>%
+  filter(Freq > 0) %>%
+  mutate(Freq = ifelse(Var2 == "loss", -Freq, Freq)) %>%
+  mutate(Var1 = factor(Var1, levels=rev(sort(unique(Var1))))) %>%
+  # mutate(cols = paste(Var2, Var1)) %>%
+  ggplot(aes(x=Var1, y=Freq, fill=Var1)) +
+  # annotate("rect", xmin = "(12,15]", xmax="(21,24]", ymin=-Inf, ymax=Inf ) +
+  geom_bar(stat="identity") + coord_flip() +
+  # scale_fill_viridis_d() +
+  scale_fill_grey() +
+  theme(legend.position = "none") +
+  xlab("oscillations\nacrophases") +
+  ylab("% contribution to linear trend") +
+  scale_y_continuous(breaks=seq(-20, 5, 5), labels=abs(seq(-20, 5, 5)))  + 
+  ggtitle("h") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+
+```
+
+#### meta (g)
+```{r fig.height = 4,fig.width =4}
+panel_meta_g <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & MPseudo2_ENR_pval < 0.05) %>%
+  ggplot(aes(x=MHR_ENR_xCOLL_acro, y=MPseudo2_ENR_est)) +
+  geom_density_2d(col="darkgrey", alpha=0.5) +
+  # ylim(-0.0025, 0.0025) +
+  ylab("donor age\n(%modC/day)") + 
+  xlab("acrophase") +
+  ggtitle("g") +
+  # ylim(0.1,-0.1) +
+  geom_hline(yintercept = 0, col="grey") +
+  scale_y_continuous(labels = scales::percent, limits = c(-0.0005, 0.0005)) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  # geom_point(size=0.5, alpha=0.1) +
+  annotate("text", size=2, x=12, y=0.0020, label=paste0("R2=0.02; p=0.002; n=603"))  + 
+  geom_smooth(method="lm", se=F, size=1, alpha=1, col="black",
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+pseudo_dat <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & MPseudo2_ENR_pval < 0.05)
+
+res <- lm(MPseudo2_ENR_est ~ sin(MHR_ENR_xCOLL_acro/24*2*pi) + cos(MHR_ENR_xCOLL_acro/24*2*pi), data=pseudo_dat)
+summary(res)
+```
+
+#### meta (h)
+```{r fig.height = 4,fig.width =4}
+panel_meta_h <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  ggplot(aes(x=MHR_ENR_xCOLL_acro, y=EXvivo_ENR_xCOLL_est)) +
+  geom_density_2d(col="darkgrey", alpha=0.5) +
+  # ylim(-0.0025, 0.0025) +
+  ylab("Ex vivo aging\n(%modC/hour)") + 
+  xlab("acrophase") +
+  ggtitle("h") +
+  geom_hline(yintercept = 0, col="grey") +
+  scale_y_continuous(labels = scales::percent, limits = c(-0.001, 0.001)) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  # geom_point(size=0.5) +
+  annotate("text", size=2, x=12, y=0.0020, label=paste0("R2=0.1; p=3.1e-06; n=270"))  + 
+  geom_smooth(method="lm", se=F, size=1, alpha=1, col="black",
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+
+exvivo_dat <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval < 0.05)
+
+res <- lm(EXvivo_ENR_xCOLL_est ~ sin(MHR_ENR_xCOLL_acro/24*2*pi) + cos(MHR_ENR_xCOLL_acro/24*2*pi), data=exvivo_dat)
+summary(res)
+```
+
+#### (i) osc-modCs: Significant only 
+```{r fig.height = 2.5,fig.width =5}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  # filter(MHR_ENR_xCOLL_pval < 0.05 & HR_tl_s4UCORCT_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  # mutate(acro = ifelse(MHR_ENR_xCOLL_acro < 12, "osc-modC\nacrophase\n(day)",
+  #                      "osc-modC\nacrophase\n(night)")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  select(modid, zt, ct, pctm, age, media, acro) %>%
+  filter(media == "ENR") %>%
+  group_by(modid, media, age) %>%
+  mutate(pctm_age = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm - pctm_age) 
+
+random_cpgs <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+    mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  sample_n(., 10)
+
+panel_i <-
+  oscmodc %>%
+  # mutate(zt = zt + 24) %>%
+  # rbind(., oscmodc) %>%
+  # mutate(zt = zt + 24) %>%
+  # rbind(., oscmodc) %>%
+  filter(between(zt, 0, 25)) %>%
+  filter(zt <= 24) %>%
+  filter(modid %in% random_cpgs$modid) %>%
+  # filter(acro == "(3,6]" | acro == "(6,9]" | acro == "(9,12]"| acro == "(18,21]" |acro == "(21,24]") %>%
+  mutate(acro = factor(acro, levels=c("light", "dark", "NA"))) %>%
+  # filter(acro == "acrophase:\nZT:0-12") %>%
+  filter(!is.na(acro)) %>%
+  ggplot(aes(x=zt, y=pctm_norm*100)) +
+  annotate("rect",ymin=-Inf, ymax=Inf, xmin = 13, xmax=19, fill="grey", alpha=0.5) +
+  # facet_wrap(acro~., nrow=1, strip.position = "top")  +
+  theme(legend.position = "none", panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  # geom_vline(xintercept=c(S_acro, S_acro+24), linetype="dotted", col="black") +
+  geom_smooth(aes(group=as.factor(modid), col=acro),
+              # col="#999999", 
+              # size=0.2,
+              method="lm", se=F, size=0.25, alpha=0.25,
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) +
+  scale_x_continuous(breaks=seq(0,24,4)) +
+  # annotate("rect",ymin=-Inf, ymax=Inf,
+  #          xmin = G2M_acro-G2M_acro_sd-24, xmax=G2M_acro+G2M_acro_sd-24, fill="#980043", alpha=0.1) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, 
+  #          xmin = G2M_acro-G2M_acro_sd, xmax=G2M_acro+G2M_acro_sd, fill="#980043", alpha=0.1) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, 
+  #          xmin = G2M_acro-G2M_acro_sd+24, xmax=G2M_acro+G2M_acro_sd+24, fill="#980043", alpha=0.1) +
+  # geom_vline(xintercept=c(G2M_acro, G2M_acro+24, G2M_acro-24), linetype="dashed", col="#980043") +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = 13+24, xmax=19+24, fill="grey", alpha=0.5) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = 10+48, xmax=22+48, fill="blue", alpha=0.2) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = S_acro-S_acro_sd+24, xmax=S_acro+S_acro_sd+24, fill="blue", alpha=0.2) +
+  geom_smooth(aes(col=acro), method="lm", se=F, size=2, alpha=0.1, 
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) +
+  geom_vline(xintercept=c(S_acro), linetype="dotted", col="black") +
+  ylab("normalized % modC") +
+  xlab("ZT") +
+  # ylim(-2.5,2.5) +
+  # scale_color_manual(values=c(viridis::viridis(1000))) +
+  # scale_color_grey() +
+  scale_color_manual(values=c("darkred","darkblue")) +
+  # scale_x_continuous(breaks=seq(0, 24, 4), labels=c(rep(seq(0, 20, 4),1),0))  + 
+  ggtitle("i") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+```
+
+##### MESOR calc
+```{r}
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  # filter(MHR_ENR_xCOLL_pval < 0.05 & HR_tl_s4UCORCT_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  # mutate(acro = ifelse(MHR_ENR_xCOLL_acro < 12, "osc-modC\nacrophase\n(day)",
+  #                      "osc-modC\nacrophase\n(night)")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  select(modid, zt, ct, pctm, age, media, acro) %>%
+  filter(media == "ENR") %>%
+  group_by(modid, media, age) %>%
+  mutate(pctm_age = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm - pctm_age) 
+
+MESORs <- oscmodc %>%
+  ungroup() %>%
+  group_by(acro) %>%
+  summarise(mean = mean(pctm)*100,
+            sd = sd(pctm)*100,
+            n=n()) 
+
+light <- oscmodc %>%
+  filter(acro=="light") %>%
+  mutate(zt= as.numeric(zt))
+
+m1 <- cosinor::cosinor.lm(pctm ~ time(zt), data= light, period =24)
+
+m1$coefficients
+
+dark <- oscmodc %>%
+  filter(acro=="dark") %>%
+  mutate(zt= as.numeric(zt))
+m2 <- cosinor::cosinor.lm(pctm ~ time(zt), data= dark, period =24)
+
+m2$coefficients
+```
+
+<!-- #### (i) tmp -->
+<!-- ```{r fig.height = 2.5,fig.width =5} -->
+
+<!-- oscmodc <- dat %>% -->
+<!--   filter(MHR_ENR_xCOLL_pval < 0.05) -->
+
+<!-- oscmodc %>% -->
+<!--   ggplot(aes(x=MHR_ENR_xCOLL_acro, y=EXvivo_ENR_xCOLL_est)) + -->
+<!--   geom_point() +  -->
+<!--   geom_smooth(method="lm", se=F, alpha=0.3,formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi)) + -->
+<!--   geom_vline(xintercept=c(G2M_acro), linetype="dashed", col="#980043") + -->
+<!--   geom_vline(xintercept=c(S_acro), linetype="dashed", col="blue") + -->
+<!--   annotate("rect",ymin=-Inf, ymax=Inf, xmin = S_acro-S_acro_sd, xmax=S_acro+S_acro_sd, fill="blue", alpha=0.2) + -->
+<!--   annotate("rect",ymin=-Inf, ymax=Inf, xmin = G2M_acro-G2M_acro_sd, xmax=G2M_acro+G2M_acro_sd, fill="#980043", alpha=0.2)  -->
+
+<!-- ``` -->
+
+#### (j) pctm at DNA synthesis
+```{r fig.height = 3.5,fig.width =8}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+mean_lines <- oscmodc %>%
+  ungroup() %>%
+  group_by(cat) %>%
+  summarise(mean = mean(pctm_norm)*100,
+            sd = sd(pctm_norm)*100,
+            n=n())
+
+panel_j <-
+oscmodc %>%
+  ggplot(aes(x=(pctm_norm)*100, col=cat)) +
+  geom_vline(xintercept = mean_lines$mean[1], col=rev(viridis::viridis(3))[2:3][1], alpha=1,linetype="dotted") +
+  geom_vline(xintercept = mean_lines$mean[2], col=rev(viridis::viridis(3))[2:3][2], alpha=1,linetype="dotted") +
+  geom_density(aes(fill=cat), alpha=0.5) +
+  # scale_color_manual(values=rev(viridis::viridis(3))[2:3], name="") +
+  # scale_fill_manual(values=rev(viridis::viridis(3))[2:3], name="") +
+  # scale_fill_grey() +
+  # scale_color_grey() +
+  scale_color_manual(values=c("darkblue","darkred")) +
+  scale_fill_manual(values=c("darkblue","darkred")) +
+  # facet_wrap(~subheading) +
+  xlab("normalized %modC") +
+  ggtitle("j") + 
+  theme(
+   legend.position = c(0.5,1.18),
+        legend.key.size = unit(0.05,'cm'),
+        # legend.direction = "horizontal",
+      legend.title = element_blank(),
+        strip.background =element_blank(),
+    legend.background = element_blank(),
+        text = element_text(size = 7))
+
+```
+
+
+#### (k) Trying something new
+```{r fig.height = 3.5,fig.width =8}
+test <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, EXvivo_ENR_xCOLL_est, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+panel_k <-
+test %>%
+  # filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_est < 0) %>%
+  # mutate(acro = cut(abs(MHR_ENR_xCOLL_acro), breaks=seq(0,24, 3))) %>%
+  # mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 9~"ZT:0~9",
+  #                         MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 21~"ZT:12~21")) %>%
+  # mutate(acro = ifelse(is.na(acro),"other ZTs", acro)) %>%
+  # mutate(slope_G2M = getSlope(S_acro, MHR_ENR_xCOLL_acro, MHR_ENR_xCOLL_amp)) %>%
+  ggplot(aes(x=abs(EXvivo_ENR_xCOLL_est)*100, y=(pctm_norm*100), col=cat)) +
+  geom_smooth(method="lm", size=0.5, fullrange=TRUE, se=F, formula='y ~ x') +
+  geom_point(size=0.2, alpha=0.2) +
+  # scale_color_manual(values=rev(viridis::viridis(3))[2:3], name="") +
+  scale_color_manual(values=c("darkblue","darkred")) +
+  scale_fill_manual(values=c("darkblue","darkred")) +
+  # scale_fill_manual(values=rev(viridis::viridis(3))[2:3], name="") +
+  ylab("deviation from MESOR\nat S phase (%modC)") +
+  xlab("rate of linear trend\n(%modC/hour)")  + 
+  # scale_x_log10() +
+  # scale_y_log10() +
+  # xlim(0,0.25) +
+  ggtitle("k") +
+  theme(
+    legend.position = c(0.5,1.18),
+    legend.key.size = unit(0.05,'cm'),
+    legend.key = element_rect(colour = "transparent", fill = "transparent"),
+    legend.title = element_blank(),
+    legend.direction = "vertical", 
+    strip.background =element_blank(),
+        text = element_text(size = 7))
+
+cor.test(test[test$cat == "light : linear loss",]$EXvivo_ENR_xCOLL_est, test[test$cat == "light : linear loss",]$pctm_norm)
+
+cor.test(test[test$cat == "dark : linear gain",]$EXvivo_ENR_xCOLL_est, test[test$cat == "dark : linear gain",]$pctm_norm)
+
+```
+
+##### lm pvalue
+```{r}
+lm_res <- lm(oscmodc$pctm_norm ~ oscmodc$cat)
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+
+lmp(lm_res)
+
+```
+
+
+
+### Figure collate
+```{r fig.height=6, fig.width=6}
+
+# (panel_a + panel_b + panel_c) / 
+#   (panel_d + (panel_e/panel_g) + (panel_f/panel_h) ) / 
+#   (panel_i1 + panel_i2 + panel_j + panel_k + plot_layout(widths = c(1,1,1.5,1.5))) + plot_layout(heights = c(1,2,1.2))
+
+# (panel_a + panel_b) / 
+#   (panel_c + (panel_d/panel_f) + (panel_e/panel_g) ) / 
+#   plot_spacer() /
+#   (panel_h + panel_i + panel_j + plot_layout(widths = c(1.5,1,1))) + plot_layout(heights = c(0.9, 2,0.05, 1.2))
+
+(panel_a + panel_b) / 
+  (panel_c + ((panel_d +panel_e+ panel_f)/(panel_meta_g + panel_meta_h) ) + plot_layout(widths = c(1,4)) ) / 
+  plot_spacer() /
+  (panel_i + panel_j + panel_k + plot_layout(widths = c(1.5,1,1))) + plot_layout(heights = c(0.8, 2,0.05, 1.2))
+```
+## NEW EXPLORATION
+## Try osc p-value statistics
+#### (j) pctm at DNA synthesis
+```{r fig.height = 5,fig.width =8}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_pvals <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, MHR_ENR_xCOLL_pval) %>%
+  # summarise(n())
+  mutate(qbins = cut(MHR_ENR_xCOLL_pval, quantile(MHR_ENR_xCOLL_pval, seq(0,1,0.1)))) %>%
+  rename(osc_pval = MHR_ENR_xCOLL_pval)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_pvals) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(y=qbins , x=(pctm_norm)*100)) +
+  geom_boxplot() +
+  xlab("%modC @ peak S phase") +
+  facet_wrap(~cat, scales="free")
+
+oscmodc  %>%
+  left_join(., q_pvals) %>%
+  ggplot(aes(y=pctm_norm*100, x=-log10(osc_pval), col=cat)) +
+  geom_point() +
+  ylab("%modC @ peak S phase") +
+  geom_smooth(method="lm")
+```
+## Try osc amplitude
+#### (j) pctm at DNA synthesis
+```{r fig.height = 5,fig.width =8}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_pvals <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, MHR_ENR_xCOLL_amp) %>%
+  # summarise(n())
+  mutate(qbins = cut(MHR_ENR_xCOLL_amp, quantile(MHR_ENR_xCOLL_amp, seq(0,1,0.1)), include.lowest=T)) %>%
+  rename(osc_amp = MHR_ENR_xCOLL_amp)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_pvals) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(y=qbins , x=(pctm_norm)*100)) +
+  geom_boxplot() +
+  xlab("%modC @ peak S phase") +
+  facet_wrap(~cat, scales="free")
+
+oscmodc  %>%
+  left_join(., q_pvals) %>%
+  ggplot(aes(y=pctm_norm*100, x=(osc_amp), col=cat)) +
+  geom_point() +
+  ylab("%modC @ peak S phase") +
+  geom_smooth(method="lm")
+```
+
+## Try osc acrophase
+#### (j) pctm at DNA synthesis
+```{r fig.height = 3,fig.width =5}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_acro <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, MHR_ENR_xCOLL_acro) %>%
+  # summarise(n())
+  mutate(qbins = cut(MHR_ENR_xCOLL_acro, seq(0,24,3), include.lowest=T)) %>%
+  rename(osc_acro = MHR_ENR_xCOLL_acro)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_acro) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(x=qbins , y=(pctm_norm)*100)) +
+  geom_boxplot() 
+
+oscmodc  %>%
+  left_join(., q_acro) %>%
+  ggplot(aes(y=pctm_norm*100, x=osc_acro, col=qbins)) +
+  ylab("%modC @ peak S phase") +
+  geom_boxplot() +
+  geom_point() 
+
+q_acro %>%
+  group_by(qbins) %>%
+  summarise(n= n())
+```
+
+## Try best agers pvals
+#### (j) pctm at DNA synthesis
+```{r fig.height = 3,fig.width =5}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_pvals <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, EXvivo_ENR_xCOLL_pval) %>%
+  # summarise(n())
+  mutate(qbins = cut(EXvivo_ENR_xCOLL_pval, quantile(EXvivo_ENR_xCOLL_pval, seq(0,1,0.1)), include.lowest=T)) %>%
+  rename(exvivo_pval = EXvivo_ENR_xCOLL_pval)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_pvals) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(y=qbins , x=(pctm_norm)*100)) +
+  geom_boxplot() +
+  xlab("%modC @ peak S phase") +
+  facet_wrap(~cat, scales="free")
+
+oscmodc  %>%
+  left_join(., q_pvals) %>%
+  ggplot(aes(y=pctm_norm*100, x=-log10(exvivo_pval), col=cat)) +
+  geom_point() +
+  ylab("%modC @ peak S phase") +
+  geom_smooth(method="lm")
+```
+## Try best agers estimate
+#### (j) pctm at DNA synthesis
+```{r fig.height = 3,fig.width =5}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_pvals <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, EXvivo_ENR_xCOLL_est) %>%
+  # summarise(n())
+  mutate(qbins = cut(abs(EXvivo_ENR_xCOLL_est), quantile(abs(EXvivo_ENR_xCOLL_est), seq(0,1,0.1)), include.lowest=T)) %>%
+  rename(exvivo_est = EXvivo_ENR_xCOLL_est)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_pvals) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(y=qbins , x=(pctm_norm)*100)) +
+  geom_boxplot() +
+  xlab("%modC @ peak S phase") +
+  facet_wrap(~cat, scales="free")
+
+oscmodc  %>%
+  left_join(., q_pvals) %>%
+  ggplot(aes(y=pctm_norm*100, x=abs(exvivo_est), col=cat)) +
+  geom_point() +
+  ylab("%modC @ peak S phase") +
+  geom_smooth(method="lm")
+```
+
+### end
+#### (i) osc-modCs: Significant only 
+```{r fig.height = 2.5,fig.width =5}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+  # filter(MHR_ENR_xCOLL_pval < 0.05 & HR_tl_s4UCORCT_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  # mutate(acro = ifelse(MHR_ENR_xCOLL_acro < 12, "osc-modC\nacrophase\n(day)",
+  #                      "osc-modC\nacrophase\n(night)")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  select(modid, zt, ct, pctm, age, media, acro) %>%
+  filter(media == "ENR") %>%
+  group_by(modid, media, age) %>%
+  mutate(pctm_age = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm - pctm_age) 
+
+top_pvals <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05) %>%
+    mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+
+```
+
+```{r fig.height = 2.5,fig.width =4}
+
+# panel_i <-
+  oscmodc %>%
+  # mutate(zt = zt + 24) %>%
+  # rbind(., oscmodc) %>%
+  # mutate(zt = zt + 24) %>%
+  # rbind(., oscmodc) %>%
+  filter(between(zt, 0, 24)) %>%
+  filter(zt <= 24) %>%
+  filter(modid %in% top_pvals$modid) %>%
+  # filter(acro == "(3,6]" | acro == "(6,9]" | acro == "(9,12]"| acro == "(18,21]" |acro == "(21,24]") %>%
+  mutate(acro = factor(acro, levels=c("light", "dark", "NA"))) %>%
+  # filter(acro == "acrophase:\nZT:0-12") %>%
+  filter(!is.na(acro)) %>%
+  ggplot(aes(x=zt, y=pctm_norm*100)) +
+  annotate("rect",ymin=-Inf, ymax=Inf, xmin = 13, xmax=19, fill="grey", alpha=0.5) +
+  # facet_wrap(acro~., nrow=1, strip.position = "top")  +
+  theme(legend.position = "none", panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  # geom_vline(xintercept=c(S_acro, S_acro+24), linetype="dotted", col="black") +
+  geom_smooth(aes(group=as.factor(modid), col=acro),
+              # col="#999999",
+              method="lm", se=F, size=0.25, alpha=0.25,
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) +
+  # annotate("rect",ymin=-Inf, ymax=Inf,
+  #          xmin = G2M_acro-G2M_acro_sd-24, xmax=G2M_acro+G2M_acro_sd-24, fill="#980043", alpha=0.1) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, 
+  #          xmin = G2M_acro-G2M_acro_sd, xmax=G2M_acro+G2M_acro_sd, fill="#980043", alpha=0.1) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, 
+  #          xmin = G2M_acro-G2M_acro_sd+24, xmax=G2M_acro+G2M_acro_sd+24, fill="#980043", alpha=0.1) +
+  # geom_vline(xintercept=c(G2M_acro, G2M_acro+24, G2M_acro-24), linetype="dashed", col="#980043") +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = 13+24, xmax=19+24, fill="grey", alpha=0.5) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = 10+48, xmax=22+48, fill="blue", alpha=0.2) +
+  # annotate("rect",ymin=-Inf, ymax=Inf, xmin = S_acro-S_acro_sd+24, xmax=S_acro+S_acro_sd+24, fill="blue", alpha=0.2) +
+  geom_smooth(aes(col=acro), method="lm", se=F, size=2, alpha=0.1, 
+              formula = y ~ sin(x/24*2*pi) + cos(x/24*2*pi), fullrange=TRUE) +
+  geom_vline(xintercept=c(S_acro), linetype="dotted", col="black") +
+  ylab("normalized % modC") +
+  xlab("ZT") +
+  # ylim(-2.5,2.5) +
+  # scale_color_manual(values=c(viridis::viridis(1000))) +
+  # scale_color_grey() +
+  scale_color_manual(values=c("darkred","darkblue")) +
+  # scale_x_continuous(breaks=seq(0, 24, 4), labels=c(rep(seq(0, 20, 4),1),0))  + 
+  ggtitle("i") + 
+  theme(strip.background =element_blank(),
+        text = element_text(size = 7))
+```
+
+#### (j) pctm at DNA synthesis
+```{r fig.height = 5,fig.width =8}
+
+oscmodc <- dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  # filter(EXvivo_ENR_xCOLL_pval < 0.05) %>%
+  fetch_pctm(., mydat) %>%
+  mutate(direction = ifelse(EXvivo_ENR_xCOLL_est < 0, "linear loss", "linear gain")) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_pval < 0.05 & MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark",
+                          MHR_ENR_xCOLL_pval > 0.05 ~ "not oscillating")) %>%
+  filter(media == "ENR") %>%
+  select(modid, zt, ct, pctm, age, acro, direction) %>%
+  group_by(modid, age, acro, direction) %>%
+  mutate(center = median(pctm)) %>%
+  ungroup() %>%
+  mutate(pctm_norm = pctm-center) %>%
+  filter(zt == 16) %>%
+  mutate(zt = ifelse(zt == 16, "peak S phase (~ZT16)", "peak G2/M (~ZT23)")) %>%
+  mutate(cat = paste0(acro," : ",direction)) %>%
+  filter(cat == "dark : linear gain" | cat == "light : linear loss")
+
+q_pvals <-
+  dat %>%
+  filter(MHR_ENR_xCOLL_pval < 0.05 & EXvivo_ENR_xCOLL_pval <0.05) %>%
+  mutate(acro = case_when(MHR_ENR_xCOLL_acro > 0 & MHR_ENR_xCOLL_acro < 12~"light",
+                          MHR_ENR_xCOLL_acro > 12 & MHR_ENR_xCOLL_acro < 24~"dark")) %>%
+  group_by(acro) %>%
+  select(modid, acro, MHR_ENR_xCOLL_pval) %>%
+  # summarise(n())
+  mutate(qbins = cut(MHR_ENR_xCOLL_pval, quantile(MHR_ENR_xCOLL_pval, seq(0,1,0.1)))) %>%
+  rename(osc_pval = MHR_ENR_xCOLL_pval)
+  # top_n(., 10, -MHR_ENR_xCOLL_pval)
+
+oscmodc %>%
+  left_join(., q_pvals) %>%
+  # mutate(qbins = quantile(MHR_ENR_xCOLL_pval))
+  # filter(modid %in% top_pvals$modid) %>%
+  ggplot(aes(y=qbins , x=(pctm_norm)*100)) +
+  geom_boxplot() +
+  facet_wrap(~cat, scales="free")
+
+oscmodc  %>%
+  left_join(., q_pvals) %>%
+  ggplot(aes(y=pctm_norm*100, x=-log10(osc_pval), col=cat)) +
+  geom_point() +
+  geom_smooth(method="lm")
+```
+
+```{r}
+
+```
